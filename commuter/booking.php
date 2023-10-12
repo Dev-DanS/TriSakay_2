@@ -70,20 +70,20 @@ session_start();
     <?php
     include '../db/dbconn.php';
 
-    $query = "SELECT borders FROM route";
+    $query = "SELECT toda, borders FROM route";
     $result = mysqli_query($conn, $query);
     $rows = array();
 
     while ($r = mysqli_fetch_assoc($result)) {
-        $rows[] = json_decode($r['borders']);
+        $rows[] = array(
+            'toda' => $r['toda'],
+            'borders' => json_decode($r['borders'], true)
+        );
     }
 
     $jsonData = json_encode($rows);
     ?>
 
-    <script>
-        const dbPolygons = <?php echo $jsonData; ?>;
-    </script>
 
 
 
@@ -137,14 +137,41 @@ session_start();
         }
 
         navigator.geolocation.getCurrentPosition(updateLocation, handleError);
-        displayPolygons();
 
+
+
+        const dbPolygons = <?php echo $jsonData; ?>;
+        let polygonLayers = [];
 
         function displayPolygons() {
-            dbPolygons.forEach(polygonData => {
-                const latlngs = polygonData.latlngs[0].map(point => [point.lat, point.lng]);
-                L.polygon(latlngs).addTo(map);
+            dbPolygons.forEach((polygonData, index) => {
+                const latlngs = polygonData.borders.latlngs[0];
+                const polygon = L.polygon(latlngs).addTo(map);
+                polygon.toda = polygonData.toda;
+                polygonLayers.push(polygon);
             });
+        }
+
+        function findPolygonContainingPoint(latlng) {
+            let selectedPolygon = null;
+            polygonLayers.forEach((polygon) => {
+                if (isLatLngInPolygon(latlng, polygon.getLatLngs()[0])) {
+                    selectedPolygon = polygon;
+                }
+            });
+            return selectedPolygon;
+        }
+
+        function isLatLngInPolygon(latlng, polygon) {
+            let x = latlng.lat, y = latlng.lng;
+            let inside = false;
+            for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+                let xi = polygon[i].lat, yi = polygon[i].lng;
+                let xj = polygon[j].lat, yj = polygon[j].lng;
+                let intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
         }
 
 
@@ -221,6 +248,20 @@ session_start();
                 return;
             }
 
+            let selectedPolygon = findPolygonContainingPoint(event.latlng);
+
+            if (!selectedPolygon) return;
+
+            if (!isPickupConfirmed) {
+                currentToda = selectedPolygon.toda;
+            }
+
+            if (!isDropoffConfirmed && isPickupConfirmed) {
+                if (currentToda !== selectedPolygon.toda) {
+                    return;
+                }
+            }
+
             if (isFirstDoubleClick) {
                 document.querySelectorAll(".custom-btn").forEach(btn => btn.style.display = "none");
                 document.getElementById("pickup-confirm-btn").style.display = "block";
@@ -267,6 +308,7 @@ session_start();
             }
         }
 
+
         function getShortestPath(pickup, dropoff) {
             const pickupCoord = `${pickup.lng},${pickup.lat}`;
             const dropoffCoord = `${dropoff.lng},${dropoff.lat}`;
@@ -291,6 +333,7 @@ session_start();
         }
 
         map.on("dblclick", handleDoubleClick);
+        displayPolygons();
     </script>
 </body>
 
