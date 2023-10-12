@@ -15,6 +15,7 @@ session_start();
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
     <style>
         .custom-btn {
             display: none;
@@ -34,29 +35,62 @@ session_start();
 
     <div id="map" style="width: 100%; height: 50vh;"></div>
     <div class="locations">
-        <p id="pickup-address">Add a Pickup Point</p>
-        <p>Add a Drop-off Point</p>
+        <p id="pickup-address">Add a pick-up point by double-clicking</p>
+        <p id="dropoff-address" style="display:none;">Add a drop-off point by double-clicking.</p>
     </div>
 
     <div class="container">
         <div class="row">
             <div class="col-md-6 mb-2">
-                <button type="submit" class="btn btn-default custom-btn" id="confirm-btn">
-                    Confirm
+                <button type="submit" class="btn btn-default custom-btn" id="pickup-confirm-btn">
+                    Confirm Pickup
                 </button>
             </div>
             <div class="col-md-6 mb-2">
-                <button type="submit" class="btn btn-default custom-btn" id="undo-btn">
-                    Undo
+                <button type="submit" class="btn btn-default custom-btn" id="pickup-undo-btn">
+                    Undo Pickup
+                </button>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-md-6 mb-2">
+                <button type="submit" class="btn btn-default custom-btn" id="dropoff-confirm-btn">
+                    Confirm Drop-off
+                </button>
+            </div>
+            <div class="col-md-6 mb-2">
+                <button type="submit" class="btn btn-default custom-btn" id="dropoff-undo-btn">
+                    Undo Drop-off
                 </button>
             </div>
         </div>
     </div>
 
+    <div class="passenger"></div>
+    <?php
+    include '../db/dbconn.php';
+
+    $query = "SELECT borders FROM route";
+    $result = mysqli_query($conn, $query);
+    $rows = array();
+
+    while ($r = mysqli_fetch_assoc($result)) {
+        $rows[] = json_decode($r['borders']);
+    }
+
+    $jsonData = json_encode($rows);
+    ?>
+
+    <script>
+        const dbPolygons = <?php echo $jsonData; ?>;
+    </script>
+
+
+
     <script>
         var map = L.map('map', {
             zoomControl: false,
-            doubleClickZoom: false // Disable double-click zoom
+            doubleClickZoom: false
         }).setView([0, 0], 14);
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -77,11 +111,19 @@ session_start();
             popupAnchor: [1, -34]
         });
 
+        var redMarkerIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34]
+        });
+
         var blueMarker = L.marker([0, 0], {
             icon: blueMarkerIcon
         }).addTo(map).bindPopup('You are here').openPopup();
 
-        var pickupMarker = null; // Initialize pickup marker variable
+        var pickupMarker = null;
+        var dropoffMarker = null;
 
         function updateLocation(position) {
             var latitude = position.coords.latitude;
@@ -92,15 +134,25 @@ session_start();
         }
 
         function handleError(error) {
-            // console.error('Error getting user location: ' + error.message);
         }
 
-        // Get the user's position once and center the map to it
         navigator.geolocation.getCurrentPosition(updateLocation, handleError);
+        displayPolygons();
+
+
+        function displayPolygons() {
+            dbPolygons.forEach(polygonData => {
+                const latlngs = polygonData.latlngs[0].map(point => [point.lat, point.lng]);
+                L.polygon(latlngs).addTo(map);
+            });
+        }
+
+
 
         const searchInput = document.getElementById("search-input");
         const searchButton = document.getElementById("search-button");
-        const pickupAddress = document.getElementById("pickup-address"); // Add the ID to your <h4> element
+        const pickupAddress = document.getElementById("pickup-address");
+        const dropoffAddress = document.getElementById("dropoff-address");
 
         searchInput.addEventListener("keyup", function (event) {
             if (event.keyCode === 13) {
@@ -116,41 +168,130 @@ session_start();
                     map.setView([result.lat, result.lon], 16);
                 })
                 .catch(function (error) {
-                    console.log(error);
                 });
         });
 
-        // Function to handle double-click events
-        function handleDoubleClick(event) {
-            var latlng = event.latlng; // Get the clicked coordinates
+        var isPickupConfirmed = false;
+        var isDropoffConfirmed = false;
+        var isFirstDoubleClick = true;
 
-            // Remove existing pickup marker if it exists
+        document.getElementById("pickup-confirm-btn").addEventListener("click", function () {
+            isPickupConfirmed = true;
+            document.querySelectorAll(".custom-btn").forEach(btn => btn.style.display = "none");
+            document.getElementById("dropoff-address").style.display = "block";
+            document.getElementById("dropoff-confirm-btn").style.display = "block";
+            document.getElementById("dropoff-undo-btn").style.display = "block";
+        });
+
+        document.getElementById("pickup-undo-btn").addEventListener("click", function () {
             if (pickupMarker) {
                 map.removeLayer(pickupMarker);
+                pickupMarker = null;
+                pickupAddress.textContent = "Add a Pickup Point";
+            }
+            isPickupConfirmed = false;
+            document.querySelectorAll(".custom-btn").forEach(btn => btn.style.display = "none");
+            isFirstDoubleClick = true;
+        });
+
+        document.getElementById("dropoff-confirm-btn").addEventListener("click", function () {
+            isDropoffConfirmed = true;
+            document.querySelectorAll(".custom-btn").forEach(btn => btn.style.display = "none");
+            document.getElementById("pickup-address").style.display = "block";
+            isFirstDoubleClick = true;
+
+            if (isPickupConfirmed && isDropoffConfirmed) {
+                getShortestPath(pickupMarker.getLatLng(), dropoffMarker.getLatLng());
+            }
+        });
+
+        document.getElementById("dropoff-undo-btn").addEventListener("click", function () {
+            if (dropoffMarker) {
+                map.removeLayer(dropoffMarker);
+                dropoffMarker = null;
+                dropoffAddress.textContent = "Add a Drop-off Point";
+            }
+            isDropoffConfirmed = false;
+            document.querySelectorAll(".custom-btn").forEach(btn => btn.style.display = "none");
+            isFirstDoubleClick = true;
+        });
+
+        function handleDoubleClick(event) {
+            if (isPickupConfirmed && isDropoffConfirmed) {
+                return;
             }
 
-            pickupMarker = L.marker(latlng, {
-                icon: greenMarkerIcon
-            }).addTo(map).bindPopup('Pickup point').openPopup();
+            if (isFirstDoubleClick) {
+                document.querySelectorAll(".custom-btn").forEach(btn => btn.style.display = "none");
+                document.getElementById("pickup-confirm-btn").style.display = "block";
+                document.getElementById("pickup-undo-btn").style.display = "block";
+                document.getElementById("dropoff-confirm-btn").style.display = "none";
+                document.getElementById("dropoff-undo-btn").style.display = "none";
+                isFirstDoubleClick = false;
+            }
 
-            // Get the address using reverse geocoding
-            axios.get("https://nominatim.openstreetmap.org/reverse?lat=" + latlng.lat + "&lon=" + latlng.lng + "&format=json&limit=1")
-                .then(function (response) {
-                    var address = response.data.display_name;
-                    pickupAddress.textContent = "Pickup Point: " + address; // Update the <h4> content
+            var latlng = event.latlng;
+
+            if (!isPickupConfirmed) {
+                if (pickupMarker) {
+                    map.removeLayer(pickupMarker);
+                }
+                pickupMarker = L.marker(latlng, {
+                    icon: greenMarkerIcon
+                }).addTo(map).bindPopup('Pickup point').openPopup();
+
+                axios.get("https://nominatim.openstreetmap.org/reverse?lat=" + latlng.lat + "&lon=" + latlng.lng + "&format=json")
+                    .then(function (response) {
+                        var address = response.data.display_name;
+                        pickupAddress.textContent = "Pickup to: " + address;
+                    })
+                    .catch(function (error) {
+                    });
+            }
+
+            if (!isDropoffConfirmed && isPickupConfirmed) {
+                if (dropoffMarker) {
+                    map.removeLayer(dropoffMarker);
+                }
+                dropoffMarker = L.marker(latlng, {
+                    icon: redMarkerIcon
+                }).addTo(map).bindPopup('Drop-off point').openPopup();
+
+                axios.get("https://nominatim.openstreetmap.org/reverse?lat=" + latlng.lat + "&lon=" + latlng.lng + "&format=json")
+                    .then(function (response) {
+                        var address = response.data.display_name;
+                        dropoffAddress.textContent = "Drop-off to: " + address;
+                    })
+                    .catch(function (error) {
+                    });
+            }
+        }
+
+        function getShortestPath(pickup, dropoff) {
+            const pickupCoord = `${pickup.lng},${pickup.lat}`;
+            const dropoffCoord = `${dropoff.lng},${dropoff.lat}`;
+            const url = `https://router.project-osrm.org/route/v1/driving/${pickupCoord};${dropoffCoord}?overview=full&geometries=geojson`;
+
+            axios.get(url)
+                .then(response => {
+                    const route = response.data.routes[0].geometry.coordinates;
+                    const geojsonRoute = {
+                        type: "Feature",
+                        properties: {},
+                        geometry: {
+                            type: "LineString",
+                            coordinates: route
+                        }
+                    };
+                    L.geoJSON(geojsonRoute).addTo(map);
                 })
-                .catch(function (error) {
+                .catch(error => {
                     console.log(error);
                 });
         }
 
-        // Add double-click event listener to the map
-        map.on('dblclick', handleDoubleClick);
+        map.on("dblclick", handleDoubleClick);
     </script>
-
-
-
-
 </body>
 
 </html>
